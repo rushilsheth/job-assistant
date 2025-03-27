@@ -1,0 +1,5 @@
+.env
+run-tracker.sh
+.DS_Store
+*.json
+*.pyc
