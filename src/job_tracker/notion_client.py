@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from mcp import ClientSession
-from mcp.client.stdio import stdio_client_from_command
+from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.types import Tool
 
 logger = logging.getLogger("job-tracker.notion")
@@ -67,20 +67,68 @@ class NotionClient:
             # Setup Notion MCP server connection
             logger.info("Connecting to Notion MCP server...")
             
-            # Using async with to properly handle the context manager
-            command = {
-                "command": "npx",
-                "args": ["-y", self.xyz_mcp_path],
-            }
+            # Determine the configuration file path (adjust as needed)
+            config_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "../../mcp_config.json"
+            )
+            with open(config_path, 'r') as config_file:
+                mcp_config = json.load(config_file)
+            
+            notion_config = mcp_config.get("mcpServers", {}).get("notion", {})
 
-            self.session = await stdio_client_from_command(command)
+            if not notion_config:
+                raise Exception("Notion MCP server configuration is missing in mcp_config.json")
+
+            # Merge system env vars with those from the configuration file.
+            server_env = os.environ.copy()
+            server_env.update(notion_config.get("env", {}))
             
-            # If database_id not set, try to find or create the job applications database
-            if not self.database_id:
-                self.database_id = await self._get_or_create_job_database()
+            # Ensure required variable is provided.
+            if not server_env.get("NOTION_PAGE_ID"):
+                raise Exception("Error: NOTION_PAGE_ID environment variable is required")
             
-            logger.info(f"Connected to Notion MCP server, using database: {self.database_id}")
-            return True
+            command = notion_config.get("command")
+            args = notion_config.get("args", [])
+            
+            server_params = StdioServerParameters(
+                command=command,
+                args=args,
+                env=server_env
+            )
+
+            # Use 'async with' to properly handle the asynchronous context manager
+            async with stdio_client(server_params) as (read, write):
+                # Initialize the client session
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self.session = session
+
+                    self.database_id = "TEST_DATABASE_ID"  # Placeholder for testing
+                    search_params = {
+                        "query": "Zaimler"
+                    }
+                    
+                    result = await self.session.call_tool("search_pages", search_params)
+                    logger.info(f"Search result: {result}")
+                    
+                    # json_text = result.content[0].text
+                    # data = json.loads(json_text)
+                    # results = data.get("results", [])
+
+                    # # Iterate through the results to find the desired page
+                    # for item in results:
+                    #     if item.get("object") == "page":
+                    #         page_id = item.get("id")
+                    #         page_title = item.get("properties", {}).get("title", {}).get("title", [{}])[0].get("text", {}).get("content", "Untitled")
+                    #         logger.info(f"Page ID: {page_id}, Title: {page_title}")
+
+
+                    # block stuff and then update
+
+                    logger.info(f"Connected to Notion MCP server, using database: {self.database_id}")
+                    return True
+
                 
         except Exception as e:
             logger.error(f"Failed to connect to Notion MCP server: {e}")
@@ -88,8 +136,7 @@ class NotionClient:
     
     async def disconnect(self):
         """Disconnect from the Notion MCP server."""
-        if self.session:
-            await self.session.aclose()
+        if hasattr(self, 'session') and self.session is not None:
             self.session = None
             logger.info("Disconnected from Notion MCP server")
     
@@ -100,14 +147,15 @@ class NotionClient:
         Returns:
             str: Database ID of the job applications database
         """
+        logger.info("Searching for existing Job Applications database...")
         try:
+            logger.info("we here!")
             # Search for existing "Job Applications" database
             search_params = {
                 "query": "Job Applications",
                 "filter": {"object": "database"}
             }
-            result = await self.session.invoke_tool("search_notion", search_params)
-            
+            result = await self.session.call_tool("search_notion", search_params)
             # Check if we found a job applications database
             results = result.get("results", [])
             for item in results:
@@ -160,7 +208,7 @@ class NotionClient:
                 }
             }
             
-            result = await self.session.invoke_tool("create_database", db_params)
+            result = await self.session.call_tool("create_database", db_params)
             database_id = result.get("id")
             
             if database_id:
@@ -202,7 +250,7 @@ class NotionClient:
                 }
             }
             
-            result = await self.session.invoke_tool("search_notion", search_params)
+            result = await self.session.call_tool("search_notion", search_params)
             pages = []
             
             # Filter for pages in our job database
@@ -277,7 +325,7 @@ class NotionClient:
         }
         
         try:
-            result = await self.session.invoke_tool("create_page", page_params)
+            result = await self.session.call_tool("create_page", page_params)
             
             if result.get("id"):
                 logger.info(f"Created new company page: {company_name}")
@@ -385,7 +433,7 @@ class NotionClient:
                 "recursive": False
             }
             
-            blocks_result = await self.session.invoke_tool("get_block_children", children_params)
+            blocks_result = await self.session.call_tool("get_block_children", children_params)
             
             # Look for Interactions heading or append at the end
             append_after_id = None
@@ -402,13 +450,13 @@ class NotionClient:
                     "block_id": append_after_id,
                     "children": call_blocks
                 }
-                await self.session.invoke_tool("append_block_children", append_params)
+                await self.session.call_tool("append_block_children", append_params)
             else:
                 append_params = {
                     "block_id": page_id,
                     "children": call_blocks
                 }
-                await self.session.invoke_tool("append_block_children", append_params)
+                await self.session.call_tool("append_block_children", append_params)
             
             # Update page properties
             properties_update = {
@@ -421,7 +469,7 @@ class NotionClient:
                 "properties": properties_update
             }
             
-            result = await self.session.invoke_tool("update_page", update_params)
+            result = await self.session.call_tool("update_page", update_params)
             
             logger.info(f"Added call notes to company page")
             return result
@@ -545,7 +593,7 @@ class NotionClient:
                 "recursive": False
             }
             
-            blocks_result = await self.session.invoke_tool("get_block_children", children_params)
+            blocks_result = await self.session.call_tool("get_block_children", children_params)
             
             # Look for Interactions heading or append at the end
             append_after_id = None
@@ -562,13 +610,13 @@ class NotionClient:
                     "block_id": append_after_id,
                     "children": email_blocks
                 }
-                await self.session.invoke_tool("append_block_children", append_params)
+                await self.session.call_tool("append_block_children", append_params)
             else:
                 append_params = {
                     "block_id": page_id,
                     "children": email_blocks
                 }
-                await self.session.invoke_tool("append_block_children", append_params)
+                await self.session.call_tool("append_block_children", append_params)
             
             # Update page properties based on email content
             properties_update = {}
@@ -595,7 +643,7 @@ class NotionClient:
                     "properties": properties_update
                 }
                 
-                result = await self.session.invoke_tool("update_page", update_params)
+                result = await self.session.call_tool("update_page", update_params)
             else:
                 result = company_page
             

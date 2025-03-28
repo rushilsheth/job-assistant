@@ -55,6 +55,7 @@ WHISPER_MODEL=small  # Options: tiny, base, small, medium, large
 - Rename it to credentials.json
 - Save it to a secure location
 - Set GMAIL_CREDENTIALS_PATH to this file's path
+- also have creds here for MCP to use `cp /Users/rushilsheth/Documents/secrets/gmail_credentials.json ~/.gmail-mcp/gcp-oauth.keys.json`
 
 ### Running MCP Servers
 
