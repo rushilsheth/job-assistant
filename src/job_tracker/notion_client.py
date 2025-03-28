@@ -105,26 +105,6 @@ class NotionClient:
                     self.session = session
 
                     self.database_id = "TEST_DATABASE_ID"  # Placeholder for testing
-                    search_params = {
-                        "query": "Zaimler"
-                    }
-                    
-                    result = await self.session.call_tool("search_pages", search_params)
-                    logger.info(f"Search result: {result}")
-                    
-                    # json_text = result.content[0].text
-                    # data = json.loads(json_text)
-                    # results = data.get("results", [])
-
-                    # # Iterate through the results to find the desired page
-                    # for item in results:
-                    #     if item.get("object") == "page":
-                    #         page_id = item.get("id")
-                    #         page_title = item.get("properties", {}).get("title", {}).get("title", [{}])[0].get("text", {}).get("content", "Untitled")
-                    #         logger.info(f"Page ID: {page_id}, Title: {page_title}")
-
-
-                    # block stuff and then update
 
                     logger.info(f"Connected to Notion MCP server, using database: {self.database_id}")
                     return True
@@ -140,87 +120,61 @@ class NotionClient:
             self.session = None
             logger.info("Disconnected from Notion MCP server")
     
-    async def _get_or_create_job_database(self) -> str:
+    async def add_content_to_company_page(self, company_name: str, content: str):
         """
-        Find or create a job applications database in Notion.
-        
-        Returns:
-            str: Database ID of the job applications database
+        Adds content to a company's Notion page by:
+        1. Finding the page corresponding to the company.
+        2. Retrieving existing blocks on that page.
+        3. Determining if the content should be appended to existing blocks or added as new blocks.
+        4. Updating the page with the new content.
         """
-        logger.info("Searching for existing Job Applications database...")
-        try:
-            logger.info("we here!")
-            # Search for existing "Job Applications" database
-            search_params = {
-                "query": "Job Applications",
-                "filter": {"object": "database"}
-            }
-            result = await self.session.call_tool("search_notion", search_params)
-            # Check if we found a job applications database
-            results = result.get("results", [])
-            for item in results:
-                if item.get("object") == "database" and "Job Applications" in item.get("title", ""):
-                    database_id = item.get("id")
-                    logger.info(f"Found existing Job Applications database: {database_id}")
-                    return database_id
-            
-            # If not found, create a new database
-            logger.info("Job Applications database not found, creating a new one")
-            
-            # Create new database
-            db_params = {
-                "parent": {"type": "workspace", "workspace": True},
-                "title": [{"type": "text", "text": {"content": "Job Applications"}}],
-                "properties": {
-                    "Name": {"title": {}},
-                    "Status": {
-                        "select": {
-                            "options": [
-                                {"name": "Not Applied", "color": "gray"},
-                                {"name": "Applied", "color": "blue"},
-                                {"name": "Interview", "color": "yellow"},
-                                {"name": "Offer", "color": "green"},
-                                {"name": "Rejected", "color": "red"},
-                                {"name": "Declined", "color": "purple"}
-                            ]
-                        }
-                    },
-                    "Position": {"rich_text": {}},
-                    "Application Date": {"date": {}},
-                    "Contact": {"rich_text": {}},
-                    "Notes": {"rich_text": {}},
-                    "Next Step": {"select": {
-                        "options": [
-                            {"name": "Apply", "color": "blue"},
-                            {"name": "Follow Up", "color": "yellow"},
-                            {"name": "Prepare", "color": "orange"},
-                            {"name": "Interview", "color": "green"},
-                            {"name": "Wait", "color": "gray"}
-                        ]
-                    }},
-                    "Priority": {"select": {
-                        "options": [
-                            {"name": "Low", "color": "gray"},
-                            {"name": "Medium", "color": "yellow"},
-                            {"name": "High", "color": "red"}
-                        ]
-                    }}
-                }
-            }
-            
-            result = await self.session.call_tool("create_database", db_params)
-            database_id = result.get("id")
-            
-            if database_id:
-                logger.info(f"Created new Job Applications database: {database_id}")
-                return database_id
-            else:
-                logger.error("Failed to create Job Applications database")
-                raise Exception("Failed to create database")
-                
-        except Exception as e:
-            logger.error(f"Error finding/creating database: {e}")
-            raise
+
+        # Step 1: Find the company's page
+        search_params = {"query": company_name}
+        search_result = await self.session.call_tool("search_pages", search_params)
+        if not search_result.content:
+            logger.error(f"No page found for company: {company_name}")
+            return False
+
+        # Extract page ID from search results
+        page_data = json.loads(search_result.content[0].text)
+        page_id = page_data['results'][0]['id']
+
+        # Step 2: Retrieve existing blocks on the page
+        block_params = {"block_id": page_id, "recursive": True}
+        block_result = await self.session.call_tool("retrieve_block_children", block_params)
+        existing_blocks = json.loads(block_result.content[0].text)['results']
+
+        # Step 3: Use the AI model to determine content placement
+        # Prepare the prompt for the AI model
+        prompt = f"""
+        You are managing content for the company '{company_name}' on Notion. The current page has the following blocks:
+        {existing_blocks}
+
+        You need to add the following content:
+        {content}
+
+        Decide whether to append this content to an existing block or create a new block. Provide the appropriate block structure for the Notion API.
+        """
+
+        # Call the AI model to get the block structure
+        ai_response = await self.session.call_tool("generate_block_structure", {"prompt": prompt})
+        new_block_structure = json.loads(ai_response.content[0].text)
+
+        # Step 4: Update the page with the new content
+        append_params = {
+            "block_id": page_id,
+            "children": new_block_structure
+        }
+        append_result = await self.session.call_tool("append_block_children", append_params)
+
+        if append_result.status_code == 200:
+            logger.info(f"Successfully added content to {company_name}'s page.")
+            return True
+        else:
+            logger.error(f"Failed to add content to {company_name}'s page.")
+            return False
+    
     
     async def search_companies(self, query: str) -> List[Dict[str, Any]]:
         """
