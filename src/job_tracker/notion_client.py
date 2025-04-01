@@ -3,19 +3,24 @@
 Notion MCP client for JobTracker application.
 Handles interaction with Notion through the Model Context Protocol.
 """
-
-import os
-import logging
-import json
 import asyncio
+import json
+import logging
+import os
+from contextlib import AsyncExitStack
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from dotenv import load_dotenv
+from typing import Any, Dict, Optional, List
 
-from mcp import ClientSession
-from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp.types import Tool
+from openai import OpenAI, pydantic_function_tool
 
+from mcp import ClientSession, StdioServerParameters, stdio_client
+from job_tracker.utils import JsonUtils
+
+# configure logging
 logger = logging.getLogger("job-tracker.notion")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 
 # Template for company pages
 COMPANY_TEMPLATE = {
@@ -46,80 +51,107 @@ COMPANY_TEMPLATE = {
     ]
 }
 
+
 class NotionClient:
-    """Client for interacting with Notion through MCP."""
-    
-    def __init__(self):
-        """Initialize the Notion client."""
+    def __init__(self) -> None:
         self.session = None
-        self.exit_stack = None
-        self.notion_mcp_path = os.environ.get("NOTION_MCP_PATH", "notion-mcp-server")
+        self.exit_stack = AsyncExitStack()
+
+    async def connect(self) -> bool:
+        """
+        Establish a connection with the MCP server for Notion.
         
-        # Configuration
-        self.workspace_id = os.environ.get("NOTION_WORKSPACE_ID")
-        self.database_id = os.environ.get("NOTION_DATABASE_ID")
-        
-        logger.info("Notion client initialized")
-    
-    async def connect(self):
-        """Connect to the Notion MCP server."""
+        Returns:
+            True if the connection is successful, False otherwise.
+        """
+        config_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "../../mcp_config.json"
+        )
         try:
-            # Setup Notion MCP server connection
-            logger.info("Connecting to Notion MCP server...")
-            
-            # Determine the configuration file path (adjust as needed)
-            config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "../../mcp_config.json"
-            )
             with open(config_path, 'r') as config_file:
                 mcp_config = json.load(config_file)
-            
-            notion_config = mcp_config.get("mcpServers", {}).get("notion", {})
-
-            if not notion_config:
-                raise Exception("Notion MCP server configuration is missing in mcp_config.json")
-
-            # Merge system env vars with those from the configuration file.
-            server_env = os.environ.copy()
-            server_env.update(notion_config.get("env", {}))
-            
-            # Ensure required variable is provided.
-            if not server_env.get("NOTION_PAGE_ID"):
-                raise Exception("Error: NOTION_PAGE_ID environment variable is required")
-            
-            command = notion_config.get("command")
-            args = notion_config.get("args", [])
-            
-            server_params = StdioServerParameters(
-                command=command,
-                args=args,
-                env=server_env
-            )
-
-            # Use 'async with' to properly handle the asynchronous context manager
-            async with stdio_client(server_params) as (read, write):
-                # Initialize the client session
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    self.session = session
-
-                    self.database_id = "TEST_DATABASE_ID"  # Placeholder for testing
-
-                    logger.info(f"Connected to Notion MCP server, using database: {self.database_id}")
-                    return True
-
-                
         except Exception as e:
-            logger.error(f"Failed to connect to Notion MCP server: {e}")
+            logger.error("Error reading MCP config: %s", e)
             return False
-    
-    async def disconnect(self):
-        """Disconnect from the Notion MCP server."""
-        if hasattr(self, 'session') and self.session is not None:
-            self.session = None
-            logger.info("Disconnected from Notion MCP server")
-    
+
+        notion_config = mcp_config.get("mcpServers", {}).get("notion", {})
+        if not notion_config:
+            logger.error("No MCP configuration for Notion found in the config file.")
+            return False
+
+        # Prepare MCP connection parameters for Notion
+        params = {
+            "command": notion_config.get("command"),
+            "args": notion_config.get("args", []),
+            "env": notion_config.get("env"),
+            "cwd": notion_config.get("cwd"),
+            "encoding": notion_config.get("encoding", "utf-8"),
+            "encoding_error_handler": notion_config.get("encoding_error_handler", "strict"),
+        }
+
+        try:
+            mcp_params = StdioServerParameters(**params)
+            # Create the streams and initialize the session
+            streams_cm = stdio_client(mcp_params)
+            transport = await self.exit_stack.enter_async_context(streams_cm)
+            read, write = transport
+            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            self.session = session
+            return True
+        except Exception as e:
+            logger.error("Error connecting to Notion MCP server: %s", e)
+            await self.cleanup()
+            return False
+
+    async def cleanup(self):
+        """Cleanup resources associated with the connection."""
+        await self.exit_stack.aclose()
+        self.session = None
+
+    async def get_page_id(self, company_name: str, timeout: float = 10.0) -> Optional[str]:
+        """
+        Retrieve the page ID for a given company by searching its name using the Notion API search endpoint.
+
+        Args:
+            company_name: The company name to search.
+            timeout: Maximum time (in seconds) to wait for a response.
+
+        Returns:
+            The page ID if found, or None otherwise.
+        """
+        if not self.session:
+            logger.error("Session is not initialized.")
+            return None
+
+        # Prepare the search parameters.
+        search_params = {"query": company_name}
+
+        try:
+            # Call the tool 'notion_search' which proxies the Notion /search endpoint.
+            search_result = await asyncio.wait_for(
+                self.session.call_tool("notion_search", search_params), timeout=timeout
+            )
+            logger.info("Search result: %s", search_result)
+        except asyncio.TimeoutError:
+            logger.error("Timeout occurred during notion_search for company: %s", company_name)
+            return None
+        except Exception as e:
+            logger.error("Error calling notion_search: %s", e)
+            return None
+
+        if not getattr(search_result, "content", None):
+            logger.error("No page found for company: %s", company_name)
+            return None
+
+        try:
+            return search_result.content[0]
+        except (KeyError, IndexError) as e:
+            logger.error("Error parsing search result: %s", e)
+            return None
+
+
     async def add_content_to_company_page(self, company_name: str, content: str):
         """
         Adds content to a company's Notion page by:
@@ -130,19 +162,71 @@ class NotionClient:
         """
 
         # Step 1: Find the company's page
-        search_params = {"query": company_name}
-        search_result = await self.session.call_tool("search_pages", search_params)
-        if not search_result.content:
-            logger.error(f"No page found for company: {company_name}")
+        page_id = await self.get_page_id(company_name)
+        if not page_id:
+            logger.error(f"Page ID not found for company: {company_name}")
             return False
+        logger.info(f"Page ID for {company_name}: {page_id}")
 
-        # Extract page ID from search results
-        page_data = json.loads(search_result.content[0].text)
-        page_id = page_data['results'][0]['id']
+        # dynamically add content to company page
+        load_dotenv()
+        client = OpenAI()
+        messages = [
+            {"role": "user", "content": f"Add the following content to the page: {content}. The company's page ID is {page_id}."}]
+        logger.info(f"calling openai...")
+        
+        tools_list = await self.session.list_tools() # gotta cache
 
+        import copy
+
+        def remove_default_keys(schema):
+            """
+            Recursively remove all 'default' keys from a JSON schema dictionary.
+            """
+            if isinstance(schema, dict):
+                schema = {k: remove_default_keys(v) for k, v in schema.items() if k != "default"}
+            elif isinstance(schema, list):
+                schema = [remove_default_keys(item) for item in schema]
+            return schema
+
+        tools_serializable = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "strict": True,
+                    "parameters": remove_default_keys(copy.deepcopy(tool.inputSchema)),
+                },
+            }
+            for tool in tools_list.tools
+        ]
+
+        first_tool = tools_serializable[0]["function"]["parameters"]
+        logger.info(f"first tool: {tools_serializable[0]}")
+
+        
+        llm_response = client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=messages,
+            tools=tools_serializable,
+        )
+        logger.info(f"LLM response: {llm_response}")
+
+        if llm_response.tool_calls:
+            # Process each tool call
+            for tool_call in llm_response.tool_calls:
+                logger.info(f"Tool call: {tool_call}")
+                function_name = tool_call.function.name
+                function_args = json.loads(tool_call.function.arguments)
+                logger.info(f"Function call: {function_name} with arguments: {function_args}")
+                # Call the function with the arguments
+                function_result = await self.session.call_tool(function_name, function_args)
+                #logger.info(f"Function result: {function_result.content[0].text}")
         # Step 2: Retrieve existing blocks on the page
-        block_params = {"block_id": page_id, "recursive": True}
+        block_params = {"blockId": page_id} #, "recursive": True}
         block_result = await self.session.call_tool("retrieve_block_children", block_params)
+        logger.debug(f"Block result: {block_result.content[0].text}")
         existing_blocks = json.loads(block_result.content[0].text)['results']
 
         # Step 3: Use the AI model to determine content placement

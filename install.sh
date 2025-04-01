@@ -75,17 +75,23 @@ if ! npm config get prefix | grep -q "$HOME/.npm-global"; then
     fi
 fi
 
-# Continue MCP server installations
-echo -e "${YELLOW}Installing Notion and Gmail MCP Servers...${NC}"
-npm install -g notion-mcp-server @gongrzhe/server-gmail-autoauth-mcp
+# Check for git
+echo -e "${YELLOW}Checking for git...${NC}"
+if command -v git &>/dev/null; then
+    GIT_VERSION=$(git --version | cut -d' ' -f3)
+    echo -e "${GREEN}✓ git $GIT_VERSION found${NC}"
+else
+    echo -e "${RED}✗ git not found${NC}"
+    echo -e "${YELLOW}Please install git before continuing.${NC}"
+    exit 1
+fi
 
 # Create .env file template first
 echo -e "${YELLOW}Creating .env file template...${NC}"
 if [ ! -f .env ]; then
     cat > .env << EOF
 # Notion Configuration (REQUIRED)
-NOTION_MCP_PATH=notion-mcp-server
-NOTION_API_KEY=  # REQUIRED: Your Notion API key
+NOTION_API_TOKEN=  # REQUIRED: Your Notion API token
 NOTION_PAGE_ID=  # Optional: Parent page ID
 
 # Gmail Configuration (REQUIRED)
@@ -106,11 +112,87 @@ fi
 echo -e "${YELLOW}Would you like to install the MCP servers now? (y/n)${NC}"
 read -r install_servers
 if [[ $install_servers =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Installing Notion MCP Server...${NC}"
-    npm install -g notion-mcp-server
-    
+    # Install the Gmail MCP Server
     echo -e "${YELLOW}Installing Gmail MCP Server...${NC}"
     npm install -g @gongrzhe/server-gmail-autoauth-mcp
+    
+    # Set up directory for mcp-notion-server
+    NOTION_INSTALL_DIR="mcp-notion-server"
+    echo -e "${YELLOW}Setting up Notion MCP installation directory: ${NOTION_INSTALL_DIR}${NC}"
+
+    if [ -d "$NOTION_INSTALL_DIR" ]; then
+        echo -e "${YELLOW}Directory already exists. Would you like to remove it and reinstall? (y/n)${NC}"
+        read -r reinstall
+        if [[ $reinstall =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Removing existing directory...${NC}"
+            rm -rf "$NOTION_INSTALL_DIR"
+        fi
+    fi
+
+    # Clone and build the Notion MCP server if needed
+    if [ ! -d "$NOTION_INSTALL_DIR" ]; then
+        echo -e "${YELLOW}Cloning mcp-notion-server repository...${NC}"
+        git clone https://github.com/suekou/mcp-notion-server.git "$NOTION_INSTALL_DIR"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Failed to clone repository.${NC}"
+            exit 1
+        fi
+        
+        # Build the Notion MCP server
+        cd "$NOTION_INSTALL_DIR"
+        
+        # Check if there's a package.json at the root
+        if [ -f "package.json" ]; then
+            echo -e "${YELLOW}Installing dependencies at root level...${NC}"
+            npm install
+            npm run build
+            NOTION_BUILD_PATH="$(pwd)/build/index.js"
+        else
+            # If no root package.json, check for a notion directory
+            if [ -d "notion" ]; then
+                echo -e "${YELLOW}Found notion directory, checking for package.json...${NC}"
+                cd notion
+                if [ -f "package.json" ]; then
+                    echo -e "${YELLOW}Installing dependencies in notion directory...${NC}"
+                    npm install
+                    npm run build
+                    NOTION_BUILD_PATH="$(pwd)/build/index.js"
+                else
+                    echo -e "${RED}No package.json found in notion directory.${NC}"
+                    cd ..
+                    exit 1
+                fi
+                cd ..
+            else
+                echo -e "${RED}No package.json found at root and no notion directory found.${NC}"
+                echo -e "${YELLOW}Manually checking the repository structure...${NC}"
+                find . -name "package.json" -type f | sort
+                echo -e "${RED}Please inspect the repository structure and modify this script accordingly.${NC}"
+                cd ..
+                exit 1
+            fi
+        fi
+        
+        cd ..
+    else
+        echo -e "${YELLOW}Using existing mcp-notion-server installation.${NC}"
+        cd "$NOTION_INSTALL_DIR"
+        
+        # Determine the path to the built index.js file
+        if [ -f "build/index.js" ]; then
+            NOTION_BUILD_PATH="$(pwd)/build/index.js"
+        elif [ -f "notion/build/index.js" ]; then
+            NOTION_BUILD_PATH="$(pwd)/notion/build/index.js"
+        else
+            echo -e "${RED}Could not find built index.js file. Try reinstalling.${NC}"
+            cd ..
+            exit 1
+        fi
+        
+        cd ..
+    fi
+    
+    echo -e "${YELLOW}Notion MCP server build path: ${NOTION_BUILD_PATH}${NC}"
     
     echo -e "${YELLOW}Cloning Audio MCP Server...${NC}"
     git clone https://github.com/GongRzhe/Audio-MCP-Server.git
@@ -140,14 +222,12 @@ if [[ $install_servers =~ ^[Yy]$ ]]; then
 {
   "mcpServers": {
     "notion": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "${NOTION_MCP_PATH:-notion-mcp-server}"
-      ],
+      "command": "node",
+      "args": ["${NOTION_BUILD_PATH}"],
       "env": {
-        "NOTION_TOKEN": "${NOTION_API_KEY:-YOUR_NOTION_TOKEN}",
-        "NOTION_PAGE_ID": "${NOTION_PAGE_ID:-YOUR_NOTION_PAGE_ID}"
+        "NOTION_API_TOKEN": "${NOTION_API_TOKEN:-YOUR_NOTION_TOKEN}",
+        "NOTION_PAGE_ID": "${NOTION_PAGE_ID:-YOUR_NOTION_PAGE_ID}",
+        "NOTION_MARKDOWN_CONVERSION": "true"
       }
     },
     "gmail": {
@@ -177,8 +257,8 @@ EOF
         
         # Check for missing required values
         MISSING_VALUES=false
-        if [ -z "$NOTION_API_KEY" ]; then
-            echo -e "${RED}⚠ NOTION_API_KEY is not set in .env${NC}"
+        if [ -z "$NOTION_API_TOKEN" ]; then
+            echo -e "${RED}⚠ NOTION_API_TOKEN is not set in .env${NC}"
             MISSING_VALUES=true
         fi
         if [ -z "$GMAIL_CREDENTIALS_PATH" ]; then
@@ -214,18 +294,48 @@ EOF
 chmod +x run-tracker.sh
 echo -e "${GREEN}✓ Convenience script created (./run-tracker.sh)${NC}"
 
+# Create script to run mcp-notion-server
+echo -e "${YELLOW}Creating script to run Notion MCP server...${NC}"
+cat > run-notion-server.sh << EOF
+#!/bin/bash
+# Run Notion MCP Server
+
+# Set your Notion API token here (or it will use the one from .env)
+if [ -z "\$NOTION_API_TOKEN" ] && [ -f .env ]; then
+    source .env
+fi
+
+if [ -z "\$NOTION_API_TOKEN" ]; then
+    echo "Error: NOTION_API_TOKEN environment variable is not set."
+    echo "Either set it in this script, export it before running, or set NOTION_API_TOKEN in .env file."
+    exit 1
+fi
+
+# Path to the built index.js file
+NOTION_INDEX_PATH="${NOTION_BUILD_PATH}"
+
+# Run the server
+echo "Starting Notion MCP server..."
+node "\$NOTION_INDEX_PATH"
+EOF
+chmod +x run-notion-server.sh
+echo -e "${GREEN}✓ Convenience script created (./run-notion-server.sh)${NC}"
+
 echo ""
 echo -e "${GREEN}Installation completed!${NC}"
 echo "--------------------------------"
 echo "Next steps:"
 echo "1. Edit the .env file to set REQUIRED values:"
-echo "   - NOTION_API_KEY (from Notion Integrations page)"
+echo "   - NOTION_API_TOKEN (from Notion Integrations page)"
 echo "   - GMAIL_CREDENTIALS_PATH (path to your Google credentials.json)"
 echo "   - Ensure AUDIO_MCP_PATH is set correctly"
 echo "2. Run the application using Poetry:"
 echo "   poetry run job-tracker"
 echo "   or use the convenience script:"
 echo "   ./run-tracker.sh"
+echo ""
+echo "3. To run the Notion MCP server separately, use:"
+echo "   ./run-notion-server.sh"
 echo ""
 echo "To activate the Poetry environment shell, run:"
 echo "poetry shell"
