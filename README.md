@@ -21,6 +21,12 @@ A job search tracking application that uses the Model Context Protocol (MCP) to 
   - [Gmail MCP Server](https://github.com/GongRzhe/Gmail-MCP-Server)
   - [Audio MCP Server](https://github.com/GongRzhe/Audio-MCP-Server)
 
+## Toy Example
+
+<video src="artifacts/fake_transcript_notion.mov" width="320" height="240" controls></video>
+
+
+
 ## Setup
 
 1. **Clone the repository**
