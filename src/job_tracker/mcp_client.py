@@ -56,3 +56,18 @@ class MCPClient:
     async def cleanup(self):
         await self.exit_stack.aclose()
         self.session = None
+    
+    def filter_tools(self, tools: list[str]) -> list[str]:
+        """
+        Filter the tools to only include those that are relevant to the current task
+
+        Args:
+            tools: List of tool names to filter.
+
+        Returns:
+            List of available tool names.
+        """
+        # This is a placeholder implementation. The actual filtering logic should be defined based on your requirements.
+        # possibility with regex matching or embeddings; cache tools and embeddings for lower latency
+        # For now, it returns all tools.
+        return [tool for tool in tools if tool in self.session.tools]
