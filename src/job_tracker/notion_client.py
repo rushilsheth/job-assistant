@@ -97,6 +97,7 @@ class NotionClient(MCPClient):
             f"Add the following content to the page: {text_content}. "
             f"The company's page ID is {page_id}. "
             "Decide whether to append this content to an existing section or new one on the page."
+            "Do not just blindly append the content to the end of the page. Consider the different section headers and add to the correct one if applicable."
         )
         messages = [{"role": "user", "content": prompt}]
         tools_list = await self.session.list_tools()  # cache tools
