@@ -16,7 +16,6 @@ from anthropic import Anthropic
 
 from mcp import StdioServerParameters, stdio_client, ClientSession
 from job_tracker.mcp_client import MCPClient
-from job_tracker.utils import JsonUtils
 
 # configure logging
 logger = logging.getLogger("job-tracker.notion")
