@@ -171,7 +171,7 @@ class NotionClient:
 
         # dynamically add content to company page
         load_dotenv()
-        client = Anthropic()
+        anthropic = Anthropic()
         # Prepare the prompt for the AI model
 
         initial_prompt = (
@@ -194,7 +194,7 @@ class NotionClient:
 
         
         logger.info('calling LLM...')
-        llm_response = client.messages.create(
+        llm_response = anthropic.messages.create(
             model='claude-3-5-sonnet-20241022',
             messages=messages,
             max_tokens=1000,
@@ -205,46 +205,60 @@ class NotionClient:
         # Process response and handle tool calls
         final_text = []
 
-        assistant_message_content = []
-        for content in llm_response.content:
-            if content.type == 'text':
-                final_text.append(content.text)
-                assistant_message_content.append(content)
-            elif content.type == 'tool_use':
-                tool_name = content.name
-                tool_args = content.input
+        while True:
+            assistant_message_content = []
+            for content in llm_response.content:
+                logger.info(f"Processing content: {content}")
+                if content.type == 'text':
+                    logger.info(f"Adding text content: {content.text}")
+                    final_text.append(content.text)
+                    assistant_message_content.append(content)
 
-                # Execute tool call
-                result = await self.session.call_tool(tool_name, tool_args)
-                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+                elif content.type == 'tool_use':
+                    tool_name = content.name
+                    tool_args = content.input
 
-                assistant_message_content.append(content)
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_message_content
-                })
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": content.id,
-                            "content": result.content
-                        }
-                    ]
-                })
+                    # Execute tool call asynchronously
+                    result = await self.session.call_tool(tool_name, tool_args)
+                    final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
 
-                # Get next response from Claude
-                llm_response = self.anthropic.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1000,
-                    messages=messages,
-                    tools=tools_serializable
-                )
+                    assistant_message_content.append(content)
 
-                final_text.append(llm_response.content[0].text)
+                    # Append assistant's message (including tool_use)
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_message_content
+                    })
 
-            return "\n".join(final_text)
+                    # Append tool result
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": content.id,
+                                "content": result.content
+                            }
+                        ]
+                    })
+
+                    # Call Claude again after tool execution
+                    llm_response = anthropic.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        max_tokens=1000,
+                        messages=messages,
+                        tools=tools_serializable
+                    )
+
+                    # Break inner loop to process next response
+                    break
+            else:
+                # No tool use found, exit loop
+                break
+
+        # Return final accumulated text
+        return "\n".join(final_text)
+
     
     
     async def search_companies(self, query: str) -> List[Dict[str, Any]]:
