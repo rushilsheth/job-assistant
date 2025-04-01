@@ -6,7 +6,7 @@ A job search tracking application that uses the Model Context Protocol (MCP) to 
 
 - **Audio Recording & Transcription**: Capture audio from interviews and video calls
 - **Email Processing**: Extract job-related information from emails
-- **Notion Integration**: Organize everything in Notion by company
+- **Notion Integration**: Add to content from audio or email to correct page
 - **State Management**: Track your job search progress
 
 ## Prerequisites
@@ -17,7 +17,7 @@ A job search tracking application that uses the Model Context Protocol (MCP) to 
 - Notion account with API access
 - Gmail account with API access
 - MCP servers:
-  - [Notion MCP Server](https://github.com/awkoy/notion-mcp-server)
+  - [Notion MCP Server](https://github.com/suekou/mcp-notion-server)
   - [Gmail MCP Server](https://github.com/GongRzhe/Gmail-MCP-Server)
   - [Audio MCP Server](https://github.com/GongRzhe/Audio-MCP-Server)
 
@@ -36,7 +36,7 @@ Make the installation script executable and run it:
 
 ```bash
 chmod +x install.sh
-./install.sh
+make install
 ```
 
 The script will:
@@ -51,7 +51,7 @@ Edit the `.env` file created by the installation script:
 
 ```env
 # Notion Configuration
-NOTION_MCP_PATH=notion-mcp-server
+NOTION_MCP_PATH=mcp-notion-server
 NOTION_WORKSPACE_ID=your_workspace_id
 NOTION_DATABASE_ID=your_database_id  # Optional, will create one if not provided
 
@@ -62,10 +62,6 @@ GMAIL_MCP_PATH=@gongrzhe/server-gmail-autoauth-mcp
 AUDIO_MCP_PATH=audio-mcp-server
 WHISPER_MODEL=small  # Options: tiny, base, small, medium, large
 ```
-
-4. **Configure MCP servers**
-
-Edit the `mcp_config.json` file to set up your MCP servers with appropriate paths and credentials.
 
 ## Usage
 
@@ -107,10 +103,10 @@ poetry run job-tracker email --company "Example Company"
 
 This will search for recent emails related to the company and process the most recent one.
 
-### Searching for companies
+### Add Company Content
 
 ```bash
-poetry run job-tracker search "Company Name"
+poetry run job-tracker add-content "COMPANY NAME" --email email_id
 ```
 
 ### Checking company status

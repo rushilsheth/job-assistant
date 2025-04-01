@@ -222,14 +222,6 @@ async def main():
     email_parser.add_argument("--id", help="Email ID (optional)")
     email_parser.add_argument("--company", help="Company name (optional)")
     
-    # Add search command
-    search_parser = subparsers.add_parser("search", help="Search for companies")
-    search_parser.add_argument("query", help="Search query")
-    
-    # Add status command
-    status_parser = subparsers.add_parser("status", help="Get company application status")
-    status_parser.add_argument("company", help="Company name")
-    
     # Add test-connections command
     test_parser = subparsers.add_parser("test-connections", help="Test connections to MCP servers")
     

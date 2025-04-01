@@ -63,7 +63,7 @@ You can run the MCP servers manually or use a tool like `pm2` to manage them:
 
 ```bash
 # Start Notion MCP server
-npx notion-mcp-server
+make run_notion_server
 
 # Start Gmail MCP server
 npx @gongrzhe/server-gmail-autoauth-mcp
@@ -71,24 +71,6 @@ npx @gongrzhe/server-gmail-autoauth-mcp
 # Start Audio MCP server
 cd Audio-MCP-Server
 python audio_server.py
-```
-
-Or using pm2 (for persistent servers):
-
-```bash
-# Install pm2
-npm install -g pm2
-
-# Start all servers
-pm2 start npx -- notion-mcp-server
-pm2 start npx -- @gongrzhe/server-gmail-autoauth-mcp
-pm2 start python -- /path/to/Audio-MCP-Server/audio_server.py
-
-# Save configuration
-pm2 save
-
-# Set pm2 to start on boot
-pm2 startup
 ```
 
 ## Recording Call Audio
