@@ -177,7 +177,7 @@ class NotionClient:
         initial_prompt = (
             f"Add the following content to the page: {content}. "
             f"The company's page ID is {page_id}. "
-            "Decide whether to append this content to an existing block or create a new block."
+            "Decide whether to append this content to an existing section or new one on the page."
         )
 
         messages = [
