@@ -23,9 +23,7 @@ A job search tracking application that uses the Model Context Protocol (MCP) to 
 
 ## Toy Example
 
-<video src="artifacts/fake_transcript_notion.mov" width="320" height="240" controls></video>
-
-
+https://github.com/user-attachments/assets/9f463c17-1f47-4c90-9bee-9c9b62470369
 
 ## Setup
 
