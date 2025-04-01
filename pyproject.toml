@@ -7,6 +7,7 @@ readme = "README.md"
 packages = [{include = "job_tracker", from = "src"}]
 
 [tool.poetry.dependencies]
+anthropic = "0.49.0"
 python = "^3.11"
 mcp = "1.5.0"
 whisper = "1.1.10"

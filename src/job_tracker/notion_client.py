@@ -12,7 +12,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from typing import Any, Dict, Optional, List
 
-from openai import OpenAI, pydantic_function_tool
+#from openai import OpenAI, pydantic_function_tool
+from anthropic import Anthropic
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from job_tracker.utils import JsonUtils
@@ -170,94 +171,80 @@ class NotionClient:
 
         # dynamically add content to company page
         load_dotenv()
-        client = OpenAI()
+        client = Anthropic()
+        # Prepare the prompt for the AI model
+
+        initial_prompt = (
+            f"Add the following content to the page: {content}. "
+            f"The company's page ID is {page_id}. "
+            "Decide whether to append this content to an existing block or create a new block."
+        )
+
         messages = [
-            {"role": "user", "content": f"Add the following content to the page: {content}. The company's page ID is {page_id}."}]
-        logger.info(f"calling openai...")
+            {"role": "user", "content": initial_prompt}]
+        logger.info(f"prepping prompt...")
         
         tools_list = await self.session.list_tools() # gotta cache
 
-        import copy
-
-        def remove_default_keys(schema):
-            """
-            Recursively remove all 'default' keys from a JSON schema dictionary.
-            """
-            if isinstance(schema, dict):
-                schema = {k: remove_default_keys(v) for k, v in schema.items() if k != "default"}
-            elif isinstance(schema, list):
-                schema = [remove_default_keys(item) for item in schema]
-            return schema
-
-        tools_serializable = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "strict": True,
-                    "parameters": remove_default_keys(copy.deepcopy(tool.inputSchema)),
-                },
-            }
-            for tool in tools_list.tools
-        ]
-
-        first_tool = tools_serializable[0]["function"]["parameters"]
-        logger.info(f"first tool: {tools_serializable[0]}")
+        tools_serializable = [{
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.inputSchema
+        } for tool in tools_list.tools]
 
         
-        llm_response = client.chat.completions.create(
-            model='gpt-4o-mini',
+        logger.info('calling LLM...')
+        llm_response = client.messages.create(
+            model='claude-3-5-sonnet-20241022',
             messages=messages,
+            max_tokens=1000,
             tools=tools_serializable,
         )
         logger.info(f"LLM response: {llm_response}")
 
-        if llm_response.tool_calls:
-            # Process each tool call
-            for tool_call in llm_response.tool_calls:
-                logger.info(f"Tool call: {tool_call}")
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                logger.info(f"Function call: {function_name} with arguments: {function_args}")
-                # Call the function with the arguments
-                function_result = await self.session.call_tool(function_name, function_args)
-                #logger.info(f"Function result: {function_result.content[0].text}")
-        # Step 2: Retrieve existing blocks on the page
-        block_params = {"blockId": page_id} #, "recursive": True}
-        block_result = await self.session.call_tool("retrieve_block_children", block_params)
-        logger.debug(f"Block result: {block_result.content[0].text}")
-        existing_blocks = json.loads(block_result.content[0].text)['results']
+        # Process response and handle tool calls
+        final_text = []
 
-        # Step 3: Use the AI model to determine content placement
-        # Prepare the prompt for the AI model
-        prompt = f"""
-        You are managing content for the company '{company_name}' on Notion. The current page has the following blocks:
-        {existing_blocks}
+        assistant_message_content = []
+        for content in llm_response.content:
+            if content.type == 'text':
+                final_text.append(content.text)
+                assistant_message_content.append(content)
+            elif content.type == 'tool_use':
+                tool_name = content.name
+                tool_args = content.input
 
-        You need to add the following content:
-        {content}
+                # Execute tool call
+                result = await self.session.call_tool(tool_name, tool_args)
+                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
 
-        Decide whether to append this content to an existing block or create a new block. Provide the appropriate block structure for the Notion API.
-        """
+                assistant_message_content.append(content)
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_message_content
+                })
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": content.id,
+                            "content": result.content
+                        }
+                    ]
+                })
 
-        # Call the AI model to get the block structure
-        ai_response = await self.session.call_tool("generate_block_structure", {"prompt": prompt})
-        new_block_structure = json.loads(ai_response.content[0].text)
+                # Get next response from Claude
+                llm_response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1000,
+                    messages=messages,
+                    tools=tools_serializable
+                )
 
-        # Step 4: Update the page with the new content
-        append_params = {
-            "block_id": page_id,
-            "children": new_block_structure
-        }
-        append_result = await self.session.call_tool("append_block_children", append_params)
+                final_text.append(llm_response.content[0].text)
 
-        if append_result.status_code == 200:
-            logger.info(f"Successfully added content to {company_name}'s page.")
-            return True
-        else:
-            logger.error(f"Failed to add content to {company_name}'s page.")
-            return False
+            return "\n".join(final_text)
     
     
     async def search_companies(self, query: str) -> List[Dict[str, Any]]:
