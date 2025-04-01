@@ -59,7 +59,7 @@ class MCPClient:
     
     def filter_tools(self, tools: list[str]) -> list[str]:
         """
-        Filter the tools to only include those that are relevant to the current task
+        Filter the tools to only include those that are relevant to the current task. Reduces context and tokens for LLM
 
         Args:
             tools: List of tool names to filter.
